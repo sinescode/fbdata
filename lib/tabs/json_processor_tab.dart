@@ -15,29 +15,100 @@ class JSONProcessorTab extends StatefulWidget {
   State<JSONProcessorTab> createState() => _JSONProcessorTabState();
 }
 
-class _JSONProcessorTabState extends State<JSONProcessorTab> {
+class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerProviderStateMixin {
   List<Map<String, dynamic>> _data = [];
-  String _logs = '';
+  List<LogEntry> _logs = [];
   String? _fileName;
   bool _isProcessing = false;
+  bool _isProcessed = false;
+  late AnimationController _animationController;
+  late Animation<Color?> _buttonColorAnimation;
 
-  void _addLog(String message) {
+  @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    );
+    
+    _buttonColorAnimation = ColorTween(
+      begin: const Color(0xFF91B880),
+      end: const Color(0xFF467731),
+    ).animate(CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeInOut,
+    ));
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+
+  void _startButtonAnimation() {
+    _animationController.repeat(reverse: true);
+  }
+
+  void _stopButtonAnimation() {
+    _animationController.reset();
+  }
+
+  void _addLog(String message, {LogType type = LogType.info}) {
     setState(() {
-      _logs += '[${DateTime.now().toLocal()}] $message\n';
+      _logs.insert(0, LogEntry(
+        message: message,
+        timestamp: DateTime.now(),
+        type: type,
+      ));
+      
+      // Keep only last 100 logs to prevent memory issues
+      if (_logs.length > 100) {
+        _logs = _logs.sublist(0, 100);
+      }
     });
+  }
+
+  Color _getLogColor(LogType type) {
+    switch (type) {
+      case LogType.success:
+        return const Color(0xFF467731);
+      case LogType.error:
+        return const Color(0xFFD32F2F);
+      case LogType.warning:
+        return const Color(0xFFFFA000);
+      case LogType.info:
+      default:
+        return const Color(0xFF2196F3);
+    }
+  }
+
+  IconData _getLogIcon(LogType type) {
+    switch (type) {
+      case LogType.success:
+        return Icons.check_circle;
+      case LogType.error:
+        return Icons.error;
+      case LogType.warning:
+        return Icons.warning;
+      case LogType.info:
+      default:
+        return Icons.info;
+    }
   }
 
   Future<String?> _extractUid(String link) async {
     if (link.isEmpty) return null;
 
-    _addLog('Processing link: $link');
+    _addLog('Processing link: $link', type: LogType.info);
 
     // Case 1: profile.php?id=NUMBER
     final profileRegex = RegExp(r'profile\.php\?id=(\d+)');
     final profileMatch = profileRegex.firstMatch(link);
     if (profileMatch != null) {
       final uid = profileMatch.group(1);
-      _addLog('Extracted UID from profile link: $uid');
+      _addLog('Extracted UID from profile link: $uid', type: LogType.success);
       return uid;
     }
 
@@ -46,13 +117,13 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
     final numericMatch = numericRegex.firstMatch(link);
     if (numericMatch != null) {
       final uid = numericMatch.group(1);
-      _addLog('Extracted UID from numeric path: $uid');
+      _addLog('Extracted UID from numeric path: $uid', type: LogType.success);
       return uid;
     }
 
     // Case 3: share link -> fetch and parse
     try {
-      _addLog('Fetching share link content...');
+      _addLog('Fetching share link content...', type: LogType.info);
       final response = await http.get(
         Uri.parse(link),
         headers: {
@@ -72,7 +143,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
             final match = fbProfileRegex.firstMatch(content);
             if (match != null) {
               final uid = match.group(1);
-              _addLog('Extracted UID from meta tag: $uid');
+              _addLog('Extracted UID from meta tag: $uid', type: LogType.success);
               return uid;
             }
           }
@@ -83,17 +154,17 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
         final userIDMatch = userIDRegex.firstMatch(response.body);
         if (userIDMatch != null) {
           final uid = userIDMatch.group(1);
-          _addLog('Extracted UID from userID: $uid');
+          _addLog('Extracted UID from userID: $uid', type: LogType.success);
           return uid;
         }
       } else {
-        _addLog('HTTP Error: ${response.statusCode}');
+        _addLog('HTTP Error: ${response.statusCode}', type: LogType.error);
       }
     } catch (e) {
-      _addLog('Error fetching link: $e');
+      _addLog('Error fetching link: $e', type: LogType.error);
     }
 
-    _addLog('Could not extract UID from link');
+    _addLog('Could not extract UID from link', type: LogType.warning);
     return null;
   }
 
@@ -105,7 +176,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
       );
 
       if (result != null && result.files.single.path != null) {
-        _addLog('File selected: ${result.files.single.name}');
+        _addLog('File selected: ${result.files.single.name}', type: LogType.info);
         _fileName = result.files.single.name;
 
         final file = File(result.files.single.path!);
@@ -114,57 +185,73 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
 
         setState(() {
           _data = jsonData.map((item) => item as Map<String, dynamic>).toList();
+          _isProcessed = false;
         });
 
-        _addLog('Imported ${_data.length} records');
+        _addLog('Imported ${_data.length} records', type: LogType.success);
+        _stopButtonAnimation();
       }
     } catch (e) {
-      _addLog('Error importing JSON: $e');
+      _addLog('Error importing JSON: $e', type: LogType.error);
     }
   }
 
   Future<void> _processData() async {
     if (_data.isEmpty) {
-      _addLog('No data to process');
+      _addLog('No data to process', type: LogType.warning);
       return;
     }
 
     setState(() {
       _isProcessing = true;
+      _isProcessed = false;
     });
 
-    _addLog('Starting data processing...');
+    _addLog('Starting data processing...', type: LogType.info);
+
+    int processedCount = 0;
+    int successCount = 0;
 
     for (int i = 0; i < _data.length; i++) {
       final item = _data[i];
       final username = item['username']?.toString() ?? '';
 
       if (username.contains('facebook.com')) {
-        _addLog('Processing record ${i + 1}: $username');
+        processedCount++;
+        _addLog('Processing record ${i + 1}: $username', type: LogType.info);
         final uid = await _extractUid(username);
         
         if (uid != null) {
           setState(() {
             _data[i]['username'] = uid;
           });
-          _addLog('Replaced username with UID: $uid');
+          successCount++;
+          _addLog('✓ Replaced username with UID: $uid', type: LogType.success);
         } else {
-          _addLog('Failed to extract UID, keeping original username');
+          _addLog('✗ Failed to extract UID, keeping original username', type: LogType.warning);
         }
       } else {
-        _addLog('Record ${i + 1}: Not a Facebook link, skipping');
+        _addLog('Record ${i + 1}: Not a Facebook link, skipping', type: LogType.info);
       }
     }
 
     setState(() {
       _isProcessing = false;
+      _isProcessed = true;
     });
-    _addLog('Data processing completed');
+
+    _addLog('Data processing completed: $successCount/$processedCount UIDs extracted', 
+        type: LogType.success);
+    
+    // Start button animation when processing is complete
+    if (successCount > 0) {
+      _startButtonAnimation();
+    }
   }
 
   Future<void> _downloadJSON() async {
     if (_data.isEmpty) {
-      _addLog('No data to download');
+      _addLog('No data to download', type: LogType.warning);
       return;
     }
 
@@ -173,13 +260,11 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
       final String baseName = path.basenameWithoutExtension(fileName);
       final String newFileName = 'uid_$baseName.json';
 
-      // Get downloads directory - FIXED PATH
+      // Get downloads directory
       Directory? downloadsDir;
       if (Platform.isAndroid) {
-        // For Android, use external storage
         downloadsDir = Directory('/storage/emulated/0/Download');
         if (!await downloadsDir.exists()) {
-          // Fallback to getExternalStorageDirectory
           downloadsDir = await getExternalStorageDirectory();
         }
       } else {
@@ -195,43 +280,53 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
         final file = File('${saveDir.path}/$newFileName');
         await file.writeAsString(json.encode(_data));
 
-        _addLog('File saved successfully: ${file.path}');
+        _addLog('File saved successfully: ${file.path}', type: LogType.success);
         
-        // Check if file was actually created
         if (await file.exists()) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('File saved to: ${file.path}'),
+              content: Text('✓ File saved to: ${file.path}'),
               backgroundColor: const Color(0xFF467731),
+              behavior: SnackBarBehavior.floating,
             ),
           );
+          _stopButtonAnimation();
         } else {
-          _addLog('Error: File was not created');
+          _addLog('Error: File was not created', type: LogType.error);
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Error: File was not saved'),
+              content: Text('✗ Error: File was not saved'),
               backgroundColor: Colors.red,
+              behavior: SnackBarBehavior.floating,
             ),
           );
         }
       } else {
-        _addLog('Could not access downloads directory');
+        _addLog('Could not access downloads directory', type: LogType.error);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Error: Could not access storage'),
+            content: Text('✗ Error: Could not access storage'),
             backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
           ),
         );
       }
     } catch (e) {
-      _addLog('Error saving file: $e');
+      _addLog('Error saving file: $e', type: LogType.error);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Save error: $e'),
+          content: Text('✗ Save error: $e'),
           backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
         ),
       );
     }
+  }
+
+  void _clearLogs() {
+    setState(() {
+      _logs.clear();
+    });
   }
 
   @override
@@ -241,98 +336,236 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // Header Stats Card
+          Card(
+            elevation: 4,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  _buildStatItem('Records', _data.length.toString(), Icons.list_alt),
+                  _buildStatItem('Processed', _isProcessed ? 'Yes' : 'No', 
+                      _isProcessed ? Icons.check_circle : Icons.schedule),
+                  _buildStatItem('Logs', _logs.length.toString(), Icons.analytics),
+                ],
+              ),
+            ),
+          ),
+          
+          const SizedBox(height: 16),
+
+          // Action Buttons
           Row(
             children: [
               Expanded(
-                child: ElevatedButton(
+                child: ElevatedButton.icon(
                   onPressed: _importJSON,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF598745),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
-                  child: const Text('Import JSON'),
+                  icon: const Icon(Icons.file_upload, size: 20),
+                  label: const Text('Import JSON'),
                 ),
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: ElevatedButton(
+                child: ElevatedButton.icon(
                   onPressed: _isProcessing ? null : _processData,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF719F5D),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
-                  child: _isProcessing 
+                  icon: _isProcessing 
                       ? const SizedBox(
-                          width: 20,
-                          height: 20,
+                          width: 16,
+                          height: 16,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
                             valueColor: AlwaysStoppedAnimation(Colors.white),
                           ),
                         )
-                      : const Text('Process Data'),
+                      : const Icon(Icons.settings, size: 20),
+                  label: _isProcessing ? const Text('Processing...') : const Text('Process Data'),
                 ),
               ),
             ],
           ),
+          
           const SizedBox(height: 8),
-          ElevatedButton(
-            onPressed: _data.isEmpty ? null : _downloadJSON,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF91B880),
-            ),
-            child: const Text('Download Processed JSON'),
+
+          // Download Button with Animation
+          AnimatedBuilder(
+            animation: _animationController,
+            builder: (context, child) {
+              return ElevatedButton.icon(
+                onPressed: _data.isEmpty ? null : _downloadJSON,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _isProcessed 
+                      ? _buttonColorAnimation.value
+                      : const Color(0xFF91B880),
+                  elevation: _isProcessed ? 4 : 2,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                icon: const Icon(Icons.download, size: 20),
+                label: const Text('Download Processed JSON'),
+              );
+            },
           ),
+
           const SizedBox(height: 16),
-          Text(
-            'Records: ${_data.length}',
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF467731),
-            ),
-          ),
-          const SizedBox(height: 16),
+
+          // Logs Section
           Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                border: Border.all(color: const Color(0xFFB2D4A3)),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              padding: const EdgeInsets.all(8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text(
-                    'Logs:',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF467731),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF5F9F3),
-                        borderRadius: BorderRadius.circular(4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Logs Header
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Processing Logs',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF467731),
                       ),
-                      padding: const EdgeInsets.all(8),
-                      child: SingleChildScrollView(
-                        child: Text(
-                          _logs.isEmpty ? 'No logs yet...' : _logs,
-                          style: const TextStyle(
-                            fontFamily: 'Monospace',
-                            fontSize: 12,
-                          ),
+                    ),
+                    if (_logs.isNotEmpty)
+                      TextButton.icon(
+                        onPressed: _clearLogs,
+                        style: TextButton.styleFrom(
+                          foregroundColor: const Color(0xFF719F5D),
                         ),
+                        icon: const Icon(Icons.clear_all, size: 16),
+                        label: const Text('Clear All'),
                       ),
+                  ],
+                ),
+                
+                const SizedBox(height: 8),
+
+                // Logs Container
+                Expanded(
+                  child: Card(
+                    elevation: 4,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
+                    child: _logs.isEmpty
+                        ? const Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.analytics, size: 48, color: Colors.grey),
+                                SizedBox(height: 8),
+                                Text(
+                                  'No logs yet',
+                                  style: TextStyle(color: Colors.grey),
+                                ),
+                                Text(
+                                  'Import and process data to see logs',
+                                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          )
+                        : ListView.builder(
+                            reverse: true, // Newest logs first
+                            itemCount: _logs.length,
+                            itemBuilder: (context, index) {
+                              final log = _logs[index];
+                              return _buildLogCard(log);
+                            },
+                          ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ],
       ),
     );
   }
+
+  Widget _buildStatItem(String title, String value, IconData icon) {
+    return Column(
+      children: [
+        Icon(icon, size: 24, color: const Color(0xFF467731)),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: Color(0xFF467731),
+          ),
+        ),
+        Text(
+          title,
+          style: const TextStyle(
+            fontSize: 12,
+            color: Colors.grey,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLogCard(LogEntry log) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: _getLogColor(log.type).withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: _getLogColor(log.type).withOpacity(0.3),
+          width: 1,
+        ),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        leading: Icon(
+          _getLogIcon(log.type),
+          color: _getLogColor(log.type),
+          size: 20,
+        ),
+        title: Text(
+          log.message,
+          style: TextStyle(
+            fontSize: 12,
+            color: Colors.grey[800],
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        subtitle: Text(
+          '${log.timestamp.hour.toString().padLeft(2, '0')}:${log.timestamp.minute.toString().padLeft(2, '0')}:${log.timestamp.second.toString().padLeft(2, '0')}',
+          style: TextStyle(
+            fontSize: 10,
+            color: Colors.grey[600],
+          ),
+        ),
+        dense: true,
+      ),
+    );
+  }
+}
+
+enum LogType { info, success, error, warning }
+
+class LogEntry {
+  final String message;
+  final DateTime timestamp;
+  final LogType type;
+
+  LogEntry({
+    required this.message,
+    required this.timestamp,
+    required this.type,
+  });
 }
