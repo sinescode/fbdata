@@ -183,7 +183,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
     return null;
   }
 
-  Future<void> _processRecordConcurrently(int index, Map<String, dynamic> record) async {
+  Future<Map<String, dynamic>?> _processRecordConcurrently(int index, Map<String, dynamic> record) async {
     final username = record['username']?.toString() ?? '';
     
     if (!username.contains('facebook.com')) {
@@ -257,7 +257,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       final batchEnd = (i + 5) < _data.length ? i + 5 : _data.length;
       _addLog('Processing batch ${(i ~/ 5) + 1}: records ${i + 1}-$batchEnd', type: LogType.info);
 
-      final batchFutures = <Future>[];
+      final batchFutures = <Future<Map<String, dynamic>?>>[];
       for (int j = i; j < batchEnd; j++) {
         batchFutures.add(_processRecordConcurrently(j, _data[j]));
       }
@@ -267,7 +267,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         
         for (final result in batchResults) {
           if (result != null) {
-            successfulRecords.add(result as Map<String, dynamic>);
+            successfulRecords.add(result);
             successCount++;
           } else {
             failCount++;
