@@ -156,7 +156,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
   }
 
   Future<String?> _extractUidWithRetry(String link, int recordIndex) async {
-    const maxRetries = 5;
+    const maxRetries = 1;
     
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
       _addLog('Record ${recordIndex + 1}: Attempt $attempt/$maxRetries', type: LogType.info);
@@ -308,7 +308,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       final String baseName = path.basenameWithoutExtension(fileName);
       final String newFileName = 'uid_$baseName.json';
 
-      Directory? downloadsDir;
+      Directory downloadsDir;
       if (Platform.isAndroid) {
         downloadsDir = Directory('/storage/emulated/0/Download');
         if (!await downloadsDir.exists()) {
