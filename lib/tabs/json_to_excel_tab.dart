@@ -31,7 +31,7 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: const Color(0xFFD782BA),
+        backgroundColor: const Color(0xFF467731),
       ),
     );
   }
@@ -82,7 +82,7 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
       var excelFile = Excel.createExcel();
       Sheet sheet = excelFile['Sheet1'];
 
-      // Add headers with styling
+      // Add headers
       sheet.appendRow([
         TextCellValue('Username'),
         TextCellValue('Password'),
@@ -105,8 +105,17 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
       final baseName = path.basenameWithoutExtension(_selectedJsonFile!.name);
       final fileName = '${baseName}.xlsx';
       
-      // Get the downloads directory and create fb_saver folder
-      final Directory downloadsDir = Directory('/storage/emulated/0/Download');
+      // Get the downloads directory - FIXED PATH
+      Directory downloadsDir;
+      if (Platform.isAndroid) {
+        downloadsDir = Directory('/storage/emulated/0/Download');
+        if (!await downloadsDir.exists()) {
+          downloadsDir = (await getExternalStorageDirectory())!;
+        }
+      } else {
+        downloadsDir = (await getDownloadsDirectory())!;
+      }
+      
       final Directory saveDir = Directory('${downloadsDir.path}/fb_saver');
       if (!await saveDir.exists()) {
         await saveDir.create(recursive: true);
@@ -119,7 +128,12 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
       if (excelBytes != null) {
         await file.writeAsBytes(excelBytes);
         
-        _showSuccess('Converted and saved to ${saveDir.path}/$fileName');
+        // Verify file was created
+        if (await file.exists()) {
+          _showSuccess('Converted and saved to ${saveDir.path}/$fileName');
+        } else {
+          _showError('File was not created successfully');
+        }
       } else {
         _showError('Failed to encode Excel file');
       }
@@ -151,7 +165,7 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
-                      color: Color(0xFFD782BA),
+                      color: Color(0xFF467731),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -163,7 +177,7 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
                   ElevatedButton(
                     onPressed: _selectJsonFile,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFE18AD4),
+                      backgroundColor: const Color(0xFF598745),
                     ),
                     child: const Text('Select JSON File'),
                   ),
@@ -173,7 +187,7 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
                       'Selected file: ${_selectedJsonFile!.name}',
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFFD782BA),
+                        color: Color(0xFF467731),
                       ),
                     ),
                     const SizedBox(height: 8),
@@ -190,7 +204,7 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
           ElevatedButton(
             onPressed: _isConverting ? null : _convertJsonToExcel,
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFEEB1D5),
+              backgroundColor: const Color(0xFF719F5D),
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
             child: _isConverting
@@ -218,7 +232,7 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
                     'Expected JSON Format:',
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
-                      color: Color(0xFFD782BA),
+                      color: Color(0xFF467731),
                     ),
                   ),
                   SizedBox(height: 8),

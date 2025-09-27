@@ -14,16 +14,16 @@ class FBDataManagerApp extends StatelessWidget {
     return MaterialApp(
       title: 'FB Data Manager',
       theme: ThemeData(
-        primaryColor: const Color(0xFFD782BA),
+        primaryColor: const Color(0xFF467731),
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFD782BA),
-          primary: const Color(0xFFD782BA),
-          secondary: const Color(0xFFE18AD4),
-          surface: const Color(0xFFEFC7E5),
-          background: const Color(0xFFF8F0F7),
+          seedColor: const Color(0xFF467731),
+          primary: const Color(0xFF467731),
+          secondary: const Color(0xFF598745),
+          surface: const Color(0xFFB2D4A3),
+          background: const Color(0xFFF5F9F3),
         ),
         appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFFD782BA),
+          backgroundColor: Color(0xFF467731),
           titleTextStyle: TextStyle(
             color: Colors.white,
             fontSize: 20,
@@ -32,7 +32,7 @@ class FBDataManagerApp extends StatelessWidget {
         ),
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFFD782BA),
+            backgroundColor: const Color(0xFF467731),
             foregroundColor: Colors.white,
             textStyle: const TextStyle(
               fontSize: 16,
@@ -46,21 +46,20 @@ class FBDataManagerApp extends StatelessWidget {
         ),
         textButtonTheme: TextButtonThemeData(
           style: TextButton.styleFrom(
-            foregroundColor: const Color(0xFFD782BA),
+            foregroundColor: const Color(0xFF467731),
             textStyle: const TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w500,
             ),
           ),
         ),
-        // FIXED: Updated TabBarTheme to TabBarThemeData
         tabBarTheme: TabBarThemeData(
-          labelColor: const Color(0xFFD782BA),
+          labelColor: const Color(0xFF467731),
           unselectedLabelColor: Colors.grey,
           indicator: BoxDecoration(
             border: Border(
               bottom: BorderSide(
-                color: const Color(0xFFD782BA),
+                color: const Color(0xFF467731),
                 width: 2,
               ),
             ),

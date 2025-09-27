@@ -173,9 +173,15 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
       final String baseName = path.basenameWithoutExtension(fileName);
       final String newFileName = 'uid_$baseName.json';
 
+      // Get downloads directory - FIXED PATH
       Directory? downloadsDir;
       if (Platform.isAndroid) {
-        downloadsDir = await getExternalStorageDirectory();
+        // For Android, use external storage
+        downloadsDir = Directory('/storage/emulated/0/Download');
+        if (!await downloadsDir.exists()) {
+          // Fallback to getExternalStorageDirectory
+          downloadsDir = await getExternalStorageDirectory();
+        }
       } else {
         downloadsDir = await getDownloadsDirectory();
       }
@@ -191,17 +197,40 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
 
         _addLog('File saved successfully: ${file.path}');
         
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('File saved to: ${file.path}'),
-            backgroundColor: const Color(0xFFD782BA),
-          ),
-        );
+        // Check if file was actually created
+        if (await file.exists()) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('File saved to: ${file.path}'),
+              backgroundColor: const Color(0xFF467731),
+            ),
+          );
+        } else {
+          _addLog('Error: File was not created');
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Error: File was not saved'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       } else {
         _addLog('Could not access downloads directory');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Error: Could not access storage'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     } catch (e) {
       _addLog('Error saving file: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Save error: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -218,7 +247,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
                 child: ElevatedButton(
                   onPressed: _importJSON,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFE18AD4),
+                    backgroundColor: const Color(0xFF598745),
                   ),
                   child: const Text('Import JSON'),
                 ),
@@ -228,7 +257,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
                 child: ElevatedButton(
                   onPressed: _isProcessing ? null : _processData,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFEEB1D5),
+                    backgroundColor: const Color(0xFF719F5D),
                   ),
                   child: _isProcessing 
                       ? const SizedBox(
@@ -248,7 +277,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
           ElevatedButton(
             onPressed: _data.isEmpty ? null : _downloadJSON,
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFEFC7E5),
+              backgroundColor: const Color(0xFF91B880),
             ),
             child: const Text('Download Processed JSON'),
           ),
@@ -258,14 +287,14 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
             style: const TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.bold,
-              color: Color(0xFFD782BA),
+              color: Color(0xFF467731),
             ),
           ),
           const SizedBox(height: 16),
           Expanded(
             child: Container(
               decoration: BoxDecoration(
-                border: Border.all(color: const Color(0xFFE18AD4)),
+                border: Border.all(color: const Color(0xFFB2D4A3)),
                 borderRadius: BorderRadius.circular(8),
               ),
               padding: const EdgeInsets.all(8),
@@ -276,14 +305,14 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> {
                     'Logs:',
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
-                      color: Color(0xFFD782BA),
+                      color: Color(0xFF467731),
                     ),
                   ),
                   const SizedBox(height: 8),
                   Expanded(
                     child: Container(
                       decoration: BoxDecoration(
-                        color: Colors.grey[50],
+                        color: const Color(0xFFF5F9F3),
                         borderRadius: BorderRadius.circular(4),
                       ),
                       padding: const EdgeInsets.all(8),
