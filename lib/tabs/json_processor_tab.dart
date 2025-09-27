@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
@@ -17,6 +18,7 @@ class JSONProcessorTab extends StatefulWidget {
 
 class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerProviderStateMixin {
   List<Map<String, dynamic>> _data = [];
+  List<Map<String, dynamic>> _processedData = [];
   List<LogEntry> _logs = [];
   String? _fileName;
   bool _isProcessing = false;
@@ -63,7 +65,6 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         type: type,
       ));
       
-      // Keep only last 100 logs to prevent memory issues
       if (_logs.length > 100) {
         _logs = _logs.sublist(0, 100);
       }
@@ -98,38 +99,31 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
     }
   }
 
-  Future<String?> _extractUid(String link) async {
+  Future<String?> _extractUidSingleAttempt(String link) async {
     if (link.isEmpty) return null;
-
-    _addLog('Processing link: $link', type: LogType.info);
 
     // Case 1: profile.php?id=NUMBER
     final profileRegex = RegExp(r'profile\.php\?id=(\d+)');
     final profileMatch = profileRegex.firstMatch(link);
     if (profileMatch != null) {
-      final uid = profileMatch.group(1);
-      _addLog('Extracted UID from profile link: $uid', type: LogType.success);
-      return uid;
+      return profileMatch.group(1);
     }
 
     // Case 2: numeric in path
     final numericRegex = RegExp(r'facebook\.com/(\d+)');
     final numericMatch = numericRegex.firstMatch(link);
     if (numericMatch != null) {
-      final uid = numericMatch.group(1);
-      _addLog('Extracted UID from numeric path: $uid', type: LogType.success);
-      return uid;
+      return numericMatch.group(1);
     }
 
     // Case 3: share link -> fetch and parse
     try {
-      _addLog('Fetching share link content...', type: LogType.info);
       final response = await http.get(
         Uri.parse(link),
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         },
-      );
+      ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final document = html.parse(response.body);
@@ -142,9 +136,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
             final fbProfileRegex = RegExp(r'fb://profile/(\d+)');
             final match = fbProfileRegex.firstMatch(content);
             if (match != null) {
-              final uid = match.group(1);
-              _addLog('Extracted UID from meta tag: $uid', type: LogType.success);
-              return uid;
+              return match.group(1);
             }
           }
         }
@@ -153,19 +145,64 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         final userIDRegex = RegExp(r'"userID":"(\d+)"');
         final userIDMatch = userIDRegex.firstMatch(response.body);
         if (userIDMatch != null) {
-          final uid = userIDMatch.group(1);
-          _addLog('Extracted UID from userID: $uid', type: LogType.success);
-          return uid;
+          return userIDMatch.group(1);
         }
-      } else {
-        _addLog('HTTP Error: ${response.statusCode}', type: LogType.error);
       }
     } catch (e) {
-      _addLog('Error fetching link: $e', type: LogType.error);
+      // Silent fail for single attempt
     }
 
-    _addLog('Could not extract UID from link', type: LogType.warning);
     return null;
+  }
+
+  Future<String?> _extractUidWithRetry(String link, int recordIndex) async {
+    const maxRetries = 5;
+    
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+      _addLog('Record ${recordIndex + 1}: Attempt $attempt/$maxRetries', type: LogType.info);
+      
+      try {
+        final uid = await _extractUidSingleAttempt(link);
+        if (uid != null) {
+          _addLog('✓ Record ${recordIndex + 1}: UID found on attempt $attempt: $uid', type: LogType.success);
+          return uid;
+        }
+        
+        if (attempt < maxRetries) {
+          await Future.delayed(Duration(seconds: attempt * 1)); // Progressive delay
+        }
+      } catch (e) {
+        _addLog('Record ${recordIndex + 1}: Attempt $attempt failed: $e', type: LogType.warning);
+        if (attempt < maxRetries) {
+          await Future.delayed(Duration(seconds: attempt * 1));
+        }
+      }
+    }
+    
+    _addLog('✗ Record ${recordIndex + 1}: Failed to extract UID after $maxRetries attempts', type: LogType.error);
+    return null;
+  }
+
+  Future<void> _processRecordConcurrently(int index, Map<String, dynamic> record) async {
+    final username = record['username']?.toString() ?? '';
+    
+    if (!username.contains('facebook.com')) {
+      _addLog('Record ${index + 1}: Not a Facebook link, keeping original', type: LogType.info);
+      return record;
+    }
+
+    _addLog('Record ${index + 1}: Starting UID extraction', type: LogType.info);
+    final uid = await _extractUidWithRetry(username, index);
+    
+    if (uid != null) {
+      final updatedRecord = Map<String, dynamic>.from(record);
+      updatedRecord['username'] = uid;
+      _addLog('✓ Record ${index + 1}: Successfully replaced with UID', type: LogType.success);
+      return updatedRecord;
+    } else {
+      _addLog('✗ Record ${index + 1}: Removing from final data (UID not found)', type: LogType.error);
+      return null; // Mark for removal
+    }
   }
 
   Future<void> _importJSON() async {
@@ -185,6 +222,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
 
         setState(() {
           _data = jsonData.map((item) => item as Map<String, dynamic>).toList();
+          _processedData = [];
           _isProcessed = false;
         });
 
@@ -207,51 +245,61 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       _isProcessed = false;
     });
 
-    _addLog('Starting data processing...', type: LogType.info);
+    _addLog('Starting concurrent data processing...', type: LogType.info);
+    _addLog('Processing ${_data.length} records with 5 concurrent workers', type: LogType.info);
 
-    int processedCount = 0;
+    final List<Map<String, dynamic>> successfulRecords = [];
     int successCount = 0;
+    int failCount = 0;
 
-    for (int i = 0; i < _data.length; i++) {
-      final item = _data[i];
-      final username = item['username']?.toString() ?? '';
+    // Process records in batches of 5 for concurrency
+    for (int i = 0; i < _data.length; i += 5) {
+      final batchEnd = (i + 5) < _data.length ? i + 5 : _data.length;
+      _addLog('Processing batch ${(i ~/ 5) + 1}: records ${i + 1}-$batchEnd', type: LogType.info);
 
-      if (username.contains('facebook.com')) {
-        processedCount++;
-        _addLog('Processing record ${i + 1}: $username', type: LogType.info);
-        final uid = await _extractUid(username);
+      final batchFutures = <Future>[];
+      for (int j = i; j < batchEnd; j++) {
+        batchFutures.add(_processRecordConcurrently(j, _data[j]));
+      }
+
+      try {
+        final batchResults = await Future.wait(batchFutures);
         
-        if (uid != null) {
-          setState(() {
-            _data[i]['username'] = uid;
-          });
-          successCount++;
-          _addLog('✓ Replaced username with UID: $uid', type: LogType.success);
-        } else {
-          _addLog('✗ Failed to extract UID, keeping original username', type: LogType.warning);
+        for (final result in batchResults) {
+          if (result != null) {
+            successfulRecords.add(result as Map<String, dynamic>);
+            successCount++;
+          } else {
+            failCount++;
+          }
         }
-      } else {
-        _addLog('Record ${i + 1}: Not a Facebook link, skipping', type: LogType.info);
+        
+        _addLog('Batch ${(i ~/ 5) + 1} completed: $successCount successes, $failCount failures so far', 
+                type: LogType.info);
+      } catch (e) {
+        _addLog('Batch ${(i ~/ 5) + 1} error: $e', type: LogType.error);
       }
     }
 
     setState(() {
+      _processedData = successfulRecords;
       _isProcessing = false;
       _isProcessed = true;
     });
 
-    _addLog('Data processing completed: $successCount/$processedCount UIDs extracted', 
-        type: LogType.success);
-    
-    // Start button animation when processing is complete
+    _addLog('Data processing completed!', type: LogType.success);
+    _addLog('Successfully processed: $successCount records', type: LogType.success);
+    _addLog('Failed/removed: $failCount records', type: failCount > 0 ? LogType.warning : LogType.info);
+    _addLog('Final dataset: ${_processedData.length} records', type: LogType.success);
+
     if (successCount > 0) {
       _startButtonAnimation();
     }
   }
 
   Future<void> _downloadJSON() async {
-    if (_data.isEmpty) {
-      _addLog('No data to download', type: LogType.warning);
+    if (_processedData.isEmpty) {
+      _addLog('No processed data to download', type: LogType.warning);
       return;
     }
 
@@ -260,7 +308,6 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       final String baseName = path.basenameWithoutExtension(fileName);
       final String newFileName = 'uid_$baseName.json';
 
-      // Get downloads directory
       Directory? downloadsDir;
       if (Platform.isAndroid) {
         downloadsDir = Directory('/storage/emulated/0/Download');
@@ -278,7 +325,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         }
 
         final file = File('${saveDir.path}/$newFileName');
-        await file.writeAsString(json.encode(_data));
+        await file.writeAsString(json.encode(_processedData));
 
         _addLog('File saved successfully: ${file.path}', type: LogType.success);
         
@@ -347,10 +394,12 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _buildStatItem('Records', _data.length.toString(), Icons.list_alt),
-                  _buildStatItem('Processed', _isProcessed ? 'Yes' : 'No', 
+                  _buildStatItem('Total Records', _data.length.toString(), Icons.list_alt),
+                  _buildStatItem('Processed', _processedData.length.toString(), 
                       _isProcessed ? Icons.check_circle : Icons.schedule),
-                  _buildStatItem('Logs', _logs.length.toString(), Icons.analytics),
+                  _buildStatItem('Success Rate', 
+                      _data.isEmpty ? '0%' : '${((_processedData.length / _data.length) * 100).toStringAsFixed(0)}%', 
+                      Icons.analytics),
                 ],
               ),
             ),
@@ -403,7 +452,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
             animation: _animationController,
             builder: (context, child) {
               return ElevatedButton.icon(
-                onPressed: _data.isEmpty ? null : _downloadJSON,
+                onPressed: _processedData.isEmpty ? null : _downloadJSON,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _isProcessed 
                       ? _buttonColorAnimation.value
@@ -412,7 +461,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
                 icon: const Icon(Icons.download, size: 20),
-                label: const Text('Download Processed JSON'),
+                label: Text('Download (${_processedData.length} records)'),
               );
             },
           ),
@@ -476,7 +525,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
                             ),
                           )
                         : ListView.builder(
-                            reverse: true, // Newest logs first
+                            reverse: true,
                             itemCount: _logs.length,
                             itemBuilder: (context, index) {
                               final log = _logs[index];
