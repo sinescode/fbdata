@@ -156,7 +156,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
   }
 
   Future<String?> _extractUidWithRetry(String link, int recordIndex) async {
-    const maxRetries = 1;
+    const maxRetries = 3;
     
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
       _addLog('Record ${recordIndex + 1}: Attempt $attempt/$maxRetries', type: LogType.info);
@@ -309,50 +309,44 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       final String newFileName = 'uid_$baseName.json';
 
       Directory downloadsDir;
+      
+      // Use the same approach that works in JSONToExcelTab
       if (Platform.isAndroid) {
         downloadsDir = Directory('/storage/emulated/0/Download');
         if (!await downloadsDir.exists()) {
-          downloadsDir = await getExternalStorageDirectory();
+          downloadsDir = (await getExternalStorageDirectory())!;
         }
       } else {
-        downloadsDir = await getDownloadsDirectory();
+        downloadsDir = (await getDownloadsDirectory())!;
       }
+      
+      final Directory saveDir = Directory('${downloadsDir.path}/fb_saver');
+      if (!await saveDir.exists()) {
+        await saveDir.create(recursive: true);
+      }
+      
+      final filePath = path.join(saveDir.path, newFileName);
+      final file = File(filePath);
 
-      if (downloadsDir != null) {
-        final saveDir = Directory('${downloadsDir.path}/fb_saver');
-        if (!await saveDir.exists()) {
-          await saveDir.create(recursive: true);
-        }
-
-        final file = File('${saveDir.path}/$newFileName');
-        await file.writeAsString(json.encode(_processedData));
-
+      await file.writeAsString(json.encode(_processedData));
+      
+      // Verify file was created
+      if (await file.exists()) {
         _addLog('File saved successfully: ${file.path}', type: LogType.success);
         
-        if (await file.exists()) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('✓ File saved to: ${file.path}'),
-              backgroundColor: const Color(0xFF467731),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-          _stopButtonAnimation();
-        } else {
-          _addLog('Error: File was not created', type: LogType.error);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('✗ Error: File was not saved'),
-              backgroundColor: Colors.red,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✓ File saved to: ${file.path}'),
+            backgroundColor: const Color(0xFF467731),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        _stopButtonAnimation();
       } else {
-        _addLog('Could not access downloads directory', type: LogType.error);
+        _addLog('Error: File was not created', type: LogType.error);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('✗ Error: Could not access storage'),
+            content: Text('✗ Error: File was not saved'),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
