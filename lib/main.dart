@@ -53,13 +53,14 @@ class FBDataManagerApp extends StatelessWidget {
             ),
           ),
         ),
-        tabBarTheme: const TabBarTheme(
-          labelColor: Color(0xFFD782BA),
+        // FIXED: Updated TabBarTheme to TabBarThemeData
+        tabBarTheme: TabBarThemeData(
+          labelColor: const Color(0xFFD782BA),
           unselectedLabelColor: Colors.grey,
           indicator: BoxDecoration(
             border: Border(
               bottom: BorderSide(
-                color: Color(0xFFD782BA),
+                color: const Color(0xFFD782BA),
                 width: 2,
               ),
             ),
