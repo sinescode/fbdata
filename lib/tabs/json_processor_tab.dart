@@ -1,13 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' as html;
+import 'package:permission_handler/permission_handler.dart'; // Import permission_handler
 
 class JSONProcessorTab extends StatefulWidget {
   const JSONProcessorTab({super.key});
@@ -58,6 +58,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
   }
 
   void _addLog(String message, {LogType type = LogType.info}) {
+    if (!mounted) return;
     setState(() {
       _logs.insert(0, LogEntry(
         message: message,
@@ -149,39 +150,13 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         }
       }
     } catch (e) {
-      // Silent fail for single attempt
+      _addLog('Error fetching UID for $link: $e', type: LogType.warning);
     }
 
     return null;
   }
 
-  Future<String?> _extractUidWithRetry(String link, int recordIndex) async {
-    const maxRetries = 3;
-    
-    for (int attempt = 1; attempt <= maxRetries; attempt++) {
-      _addLog('Record ${recordIndex + 1}: Attempt $attempt/$maxRetries', type: LogType.info);
-      
-      try {
-        final uid = await _extractUidSingleAttempt(link);
-        if (uid != null) {
-          _addLog('✓ Record ${recordIndex + 1}: UID found on attempt $attempt: $uid', type: LogType.success);
-          return uid;
-        }
-        
-        if (attempt < maxRetries) {
-          await Future.delayed(Duration(seconds: attempt * 1)); // Progressive delay
-        }
-      } catch (e) {
-        _addLog('Record ${recordIndex + 1}: Attempt $attempt failed: $e', type: LogType.warning);
-        if (attempt < maxRetries) {
-          await Future.delayed(Duration(seconds: attempt * 1));
-        }
-      }
-    }
-    
-    _addLog('✗ Record ${recordIndex + 1}: Failed to extract UID after $maxRetries attempts', type: LogType.error);
-    return null;
-  }
+  // REMOVED: _extractUidWithRetry function is no longer needed.
 
   Future<Map<String, dynamic>?> _processRecordConcurrently(int index, Map<String, dynamic> record) async {
     final username = record['username']?.toString() ?? '';
@@ -191,13 +166,14 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       return record;
     }
 
-    _addLog('Record ${index + 1}: Starting UID extraction', type: LogType.info);
-    final uid = await _extractUidWithRetry(username, index);
+    _addLog('Record ${index + 1}: Starting UID extraction for $username', type: LogType.info);
+    // MODIFIED: Call single attempt function directly.
+    final uid = await _extractUidSingleAttempt(username);
     
     if (uid != null) {
       final updatedRecord = Map<String, dynamic>.from(record);
       updatedRecord['username'] = uid;
-      _addLog('✓ Record ${index + 1}: Successfully replaced with UID', type: LogType.success);
+      _addLog('✓ Record ${index + 1}: Successfully replaced with UID: $uid', type: LogType.success);
       return updatedRecord;
     } else {
       _addLog('✗ Record ${index + 1}: Removing from final data (UID not found)', type: LogType.error);
@@ -304,39 +280,51 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
     }
 
     try {
+      // FIXED: Request permission before trying to save
+      if (Platform.isAndroid) {
+        var status = await Permission.storage.status;
+        if (!status.isGranted) {
+            status = await Permission.storage.request();
+        }
+        if (!status.isGranted) {
+            _addLog('Storage permission denied. Cannot save file.', type: LogType.error);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('✗ Storage permission is required to save files.'),
+                backgroundColor: Colors.red,
+              ),
+            );
+            return;
+        }
+      }
+
+      // FIXED: Let the user pick the save location
+      final String? outputDirectory = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Please select where to save the file',
+      );
+
+      if (outputDirectory == null) {
+        // User cancelled the picker
+        _addLog('Save operation cancelled by user.', type: LogType.warning);
+        return;
+      }
+
       final String fileName = _fileName ?? 'processed_data';
       final String baseName = path.basenameWithoutExtension(fileName);
       final String newFileName = 'uid_$baseName.json';
-
-      Directory downloadsDir;
       
-      // Use the same approach that works in JSONToExcelTab
-      if (Platform.isAndroid) {
-        downloadsDir = Directory('/storage/emulated/0/Download');
-        if (!await downloadsDir.exists()) {
-          downloadsDir = (await getExternalStorageDirectory())!;
-        }
-      } else {
-        downloadsDir = (await getDownloadsDirectory())!;
-      }
-      
-      final Directory saveDir = Directory('${downloadsDir.path}/fb_saver');
-      if (!await saveDir.exists()) {
-        await saveDir.create(recursive: true);
-      }
-      
-      final filePath = path.join(saveDir.path, newFileName);
+      final filePath = path.join(outputDirectory, newFileName);
       final file = File(filePath);
 
       await file.writeAsString(json.encode(_processedData));
       
       // Verify file was created
       if (await file.exists()) {
-        _addLog('File saved successfully: ${file.path}', type: LogType.success);
+        _addLog('File saved successfully: $filePath', type: LogType.success);
         
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✓ File saved to: ${file.path}'),
+            content: Text('✓ File saved to: $filePath'),
             backgroundColor: const Color(0xFF467731),
             behavior: SnackBarBehavior.floating,
           ),
@@ -369,6 +357,10 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       _logs.clear();
     });
   }
+
+  // --- OMITTED: The rest of the file (build method, etc.) is unchanged ---
+  // --- Please use your existing build methods as they are correct ---
+  // --- _buildStatItem, _buildLogCard, LogType, LogEntry, etc. are also unchanged ---
 
   @override
   Widget build(BuildContext context) {

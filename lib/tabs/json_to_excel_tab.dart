@@ -3,9 +3,10 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:excel/excel.dart';
+import 'package:permission_handler/permission_handler.dart'; // Import permission_handler
+
 
 class JSONToExcelTab extends StatefulWidget {
   const JSONToExcelTab({super.key});
@@ -19,6 +20,7 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
   bool _isConverting = false;
 
   void _showError(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -28,6 +30,7 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
   }
 
   void _showSuccess(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -84,10 +87,10 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
 
       // Add headers
       sheet.appendRow([
-        TextCellValue('Username'),
-        TextCellValue('Password'),
-        TextCellValue('Authcode'),
-        TextCellValue('Email'),
+        const TextCellValue('Username'),
+        const TextCellValue('Password'),
+        const TextCellValue('Authcode'),
+        const TextCellValue('Email'),
       ]);
 
       // Add data rows
@@ -101,27 +104,31 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
         ]);
       }
 
-      // Save Excel file
-      final baseName = path.basenameWithoutExtension(_selectedJsonFile!.name);
-      final fileName = '${baseName}.xlsx';
-      
-      // Get the downloads directory - FIXED PATH
-      Directory downloadsDir;
+      // FIXED: Request storage permission
       if (Platform.isAndroid) {
-        downloadsDir = Directory('/storage/emulated/0/Download');
-        if (!await downloadsDir.exists()) {
-          downloadsDir = (await getExternalStorageDirectory())!;
+        var status = await Permission.storage.status;
+         if (!status.isGranted) {
+            status = await Permission.storage.request();
         }
-      } else {
-        downloadsDir = (await getDownloadsDirectory())!;
+        if (!status.isGranted) {
+            _showError('Storage permission denied. Cannot save file.');
+            return;
+        }
+      }
+
+      // FIXED: Let user choose the save directory
+      final String? outputDirectory = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Please select where to save the Excel file',
+      );
+      
+      if (outputDirectory == null) {
+        _showError('Save operation cancelled by user.');
+        return; // User cancelled the picker
       }
       
-      final Directory saveDir = Directory('${downloadsDir.path}/fb_saver');
-      if (!await saveDir.exists()) {
-        await saveDir.create(recursive: true);
-      }
-      
-      final filePath = path.join(saveDir.path, fileName);
+      final baseName = path.basenameWithoutExtension(_selectedJsonFile!.name);
+      final fileName = '$baseName.xlsx';
+      final filePath = path.join(outputDirectory, fileName);
       final file = File(filePath);
 
       final excelBytes = excelFile.encode();
@@ -130,7 +137,7 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
         
         // Verify file was created
         if (await file.exists()) {
-          _showSuccess('Converted and saved to ${saveDir.path}/$fileName');
+          _showSuccess('Converted and saved to $filePath');
         } else {
           _showError('File was not created successfully');
         }
@@ -140,12 +147,17 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
     } catch (e) {
       _showError('Failed to convert: $e');
     } finally {
-      setState(() {
-        _isConverting = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isConverting = false;
+        });
+      }
     }
   }
 
+  // --- OMITTED: The build method is unchanged ---
+  // --- Please use your existing build method as it is correct ---
+  
   @override
   Widget build(BuildContext context) {
     return Padding(
