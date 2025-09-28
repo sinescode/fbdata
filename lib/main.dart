@@ -333,7 +333,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
     return null;
   }
 
-  Future<Map<String, dynamic>?> _processRecordConcurrently(int index, Map<String, dynamic> record) async {
+  Future<Map<String, dynamic>?> _processRecord(int index, Map<String, dynamic> record) async {
     final username = record['username']?.toString() ?? '';
 
     if (!username.contains('facebook.com')) {
@@ -395,39 +395,28 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       _isProcessed = false;
     });
 
-    _addLog('Starting concurrent data processing...', type: LogType.info);
-    _addLog('Processing ${_data.length} records with 5 concurrent workers', type: LogType.info);
+    _addLog('Starting sequential data processing...', type: LogType.info);
+    _addLog('Processing ${_data.length} records one by one', type: LogType.info);
 
     final List<Map<String, dynamic>> successfulRecords = [];
     int successCount = 0;
     int failCount = 0;
 
-    // Process records in batches of 5 for concurrency
-    for (int i = 0; i < _data.length; i += 5) {
-      final batchEnd = (i + 5) < _data.length ? i + 5 : _data.length;
-      _addLog('Processing batch ${(i ~/ 5) + 1}: records ${i + 1}-$batchEnd', type: LogType.info);
-
-      final batchFutures = <Future<Map<String, dynamic>?>>[];
-      for (int j = i; j < batchEnd; j++) {
-        batchFutures.add(_processRecordConcurrently(j, _data[j]));
-      }
+    // Process records sequentially one by one
+    for (int i = 0; i < _data.length; i++) {
+      _addLog('Processing record ${i + 1} of ${_data.length}', type: LogType.info);
 
       try {
-        final batchResults = await Future.wait(batchFutures);
-
-        for (final result in batchResults) {
-          if (result != null) {
-            successfulRecords.add(result);
-            successCount++;
-          } else {
-            failCount++;
-          }
+        final result = await _processRecord(i, _data[i]);
+        if (result != null) {
+          successfulRecords.add(result);
+          successCount++;
+        } else {
+          failCount++;
         }
-
-        _addLog('Batch ${(i ~/ 5) + 1} completed: $successCount successes, $failCount failures so far',
-            type: LogType.info);
       } catch (e) {
-        _addLog('Batch ${(i ~/ 5) + 1} error: $e', type: LogType.error);
+        _addLog('Error processing record ${i + 1}: $e', type: LogType.error);
+        failCount++;
       }
     }
 
