@@ -207,7 +207,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
   void initState() {
     super.initState();
     _animationController = AnimationController(
-      duration: const Duration(milliseconds: 1000),
+      duration: const Duration(milliseconds: 2000),
       vsync: this,
     );
 
