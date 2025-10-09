@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:excel/excel.dart' hide Border;
@@ -183,7 +184,7 @@ Future<bool> _ensureStoragePermission(BuildContext context) async {
 }
 
 /* ---------------------------------------------------------------------------
-   JSON Processor Tab
+   JSON Processor Tab - OPTIMIZED WITH MAXIMUM CPU USAGE
    --------------------------------------------------------------------------- */
 
 class JSONProcessorTab extends StatefulWidget {
@@ -202,12 +203,17 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
   bool _isProcessed = false;
   late AnimationController _animationController;
   late Animation<Color?> _buttonColorAnimation;
+  
+  // Performance tracking
+  int _successCount = 0;
+  int _failCount = 0;
+  Stopwatch _stopwatch = Stopwatch();
 
   @override
   void initState() {
     super.initState();
     _animationController = AnimationController(
-      duration: const Duration(milliseconds: 2000),
+      duration: const Duration(milliseconds: 1000),
       vsync: this,
     );
 
@@ -277,7 +283,8 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
     }
   }
 
-  Future<String?> _extractUidSingleAttempt(String link) async {
+  // Isolate-compatible UID extraction function
+  static Future<String?> _extractUidIsolate(String link) async {
     if (link.isEmpty) return null;
 
     // Case 1: profile.php?id=NUMBER
@@ -327,31 +334,47 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         }
       }
     } catch (e) {
-      _addLog('Error fetching UID for $link: $e', type: LogType.warning);
+      // Logging will be handled in main isolate
+      return null;
     }
 
     return null;
   }
 
-  Future<Map<String, dynamic>?> _processRecord(int index, Map<String, dynamic> record) async {
-    final username = record['username']?.toString() ?? '';
+  // Worker function for isolates
+  static Future<void> _processRecordsIsolate(SendPort sendPort) async {
+    final port = ReceivePort();
+    sendPort.send(port.sendPort);
 
-    if (!username.contains('facebook.com')) {
-      _addLog('Record ${index + 1}: Not a Facebook link, keeping original', type: LogType.info);
-      return record;
-    }
+    await for (final message in port) {
+      if (message is List) {
+        final int startIndex = message[0];
+        final List<Map<String, dynamic>> records = message[1];
+        final SendPort replyTo = message[2];
 
-    _addLog('Record ${index + 1}: Starting UID extraction for $username', type: LogType.info);
-    final uid = await _extractUidSingleAttempt(username);
+        final List<Map<String, dynamic>?> results = [];
 
-    if (uid != null) {
-      final updatedRecord = Map<String, dynamic>.from(record);
-      updatedRecord['username'] = uid;
-      _addLog('✓ Record ${index + 1}: Successfully replaced with UID: $uid', type: LogType.success);
-      return updatedRecord;
-    } else {
-      _addLog('✗ Record ${index + 1}: Removing from final data (UID not found)', type: LogType.error);
-      return null; // Mark for removal
+        // Process records in this batch
+        for (int i = 0; i < records.length; i++) {
+          final record = records[i];
+          final username = record['username']?.toString() ?? '';
+
+          if (!username.contains('facebook.com')) {
+            results.add(record);
+          } else {
+            final uid = await _extractUidIsolate(username);
+            if (uid != null) {
+              final updatedRecord = Map<String, dynamic>.from(record);
+              updatedRecord['username'] = uid;
+              results.add(updatedRecord);
+            } else {
+              results.add(null); // Mark for removal
+            }
+          }
+        }
+
+        replyTo.send([startIndex, results]);
+      }
     }
   }
 
@@ -374,6 +397,8 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
           _data = jsonData.map((item) => item as Map<String, dynamic>).toList();
           _processedData = [];
           _isProcessed = false;
+          _successCount = 0;
+          _failCount = 0;
         });
 
         _addLog('Imported ${_data.length} records', type: LogType.success);
@@ -393,46 +418,125 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
     setState(() {
       _isProcessing = true;
       _isProcessed = false;
+      _successCount = 0;
+      _failCount = 0;
     });
 
-    _addLog('Starting sequential data processing...', type: LogType.info);
-    _addLog('Processing ${_data.length} records one by one', type: LogType.info);
+    _stopwatch.reset();
+    _stopwatch.start();
 
-    final List<Map<String, dynamic>> successfulRecords = [];
-    int successCount = 0;
-    int failCount = 0;
+    _addLog('Starting PARALLEL data processing with maximum CPU usage...', type: LogType.info);
+    _addLog('Processing ${_data.length} records using ${Platform.numberOfProcessors} CPU cores', type: LogType.info);
 
-    // Process records sequentially one by one
-    for (int i = 0; i < _data.length; i++) {
-      _addLog('Processing record ${i + 1} of ${_data.length}', type: LogType.info);
+    try {
+      // Use isolates for parallel processing
+      final results = await _processDataWithIsolates();
+      
+      _stopwatch.stop();
+      
+      setState(() {
+        _processedData = results;
+        _isProcessing = false;
+        _isProcessed = true;
+      });
 
-      try {
-        final result = await _processRecord(i, _data[i]);
-        if (result != null) {
-          successfulRecords.add(result);
-          successCount++;
-        } else {
-          failCount++;
-        }
-      } catch (e) {
-        _addLog('Error processing record ${i + 1}: $e', type: LogType.error);
-        failCount++;
+      final successRate = _data.isEmpty ? 0 : ((_successCount / _data.length) * 100);
+      _addLog('🚀 PARALLEL PROCESSING COMPLETED!', type: LogType.success);
+      _addLog('⏱️  Time taken: ${_stopwatch.elapsed}', type: LogType.success);
+      _addLog('✅ Successfully processed: $_successCount records', type: LogType.success);
+      _addLog('❌ Failed/removed: $_failCount records', type: _failCount > 0 ? LogType.warning : LogType.info);
+      _addLog('📊 Success rate: ${successRate.toStringAsFixed(1)}%', type: LogType.success);
+      _addLog('🎯 Final dataset: ${_processedData.length} records', type: LogType.success);
+
+      if (_successCount > 0) {
+        _startButtonAnimation();
       }
+    } catch (e) {
+      _stopwatch.stop();
+      _addLog('Error during parallel processing: $e', type: LogType.error);
+      setState(() {
+        _isProcessing = false;
+      });
     }
+  }
 
-    setState(() {
-      _processedData = successfulRecords;
-      _isProcessing = false;
-      _isProcessed = true;
-    });
+  Future<List<Map<String, dynamic>>> _processDataWithIsolates() async {
+    final int numberOfCores = Platform.numberOfProcessors;
+    final int batchSize = (_data.length / numberOfCores).ceil();
+    
+    _addLog('Using $numberOfCores CPU cores with batch size of $batchSize records per core', type: LogType.info);
 
-    _addLog('Data processing completed!', type: LogType.success);
-    _addLog('Successfully processed: $successCount records', type: LogType.success);
-    _addLog('Failed/removed: $failCount records', type: failCount > 0 ? LogType.warning : LogType.info);
-    _addLog('Final dataset: ${_processedData.length} records', type: LogType.success);
+    final List<Isolate> isolates = [];
+    final List<ReceivePort> receivePorts = [];
+    final List<Future<List<Map<String, dynamic>>>> futures = [];
 
-    if (successCount > 0) {
-      _startButtonAnimation();
+    try {
+      // Create isolates
+      for (int i = 0; i < numberOfCores; i++) {
+        final startIndex = i * batchSize;
+        final endIndex = (i + 1) * batchSize;
+        if (startIndex >= _data.length) break;
+
+        final batch = _data.sublist(
+          startIndex,
+          endIndex > _data.length ? _data.length : endIndex,
+        );
+
+        final receivePort = ReceivePort();
+        receivePorts.add(receivePort);
+
+        final isolate = await Isolate.spawn(
+          _processRecordsIsolate,
+          receivePort.sendPort,
+        );
+        isolates.add(isolate);
+
+        // Send data to isolate and wait for response
+        final completer = Completer<List<Map<String, dynamic>>>();
+        receivePort.listen((message) {
+          if (message is SendPort) {
+            // Isolate is ready, send the batch
+            message.send([startIndex, batch, receivePort.sendPort]);
+          } else if (message is List) {
+            // Received results from isolate
+            final int batchStartIndex = message[0];
+            final List<Map<String, dynamic>?> batchResults = message[1];
+            
+            // Filter out null results (failed records)
+            final successfulRecords = batchResults.whereType<Map<String, dynamic>>().toList();
+            
+            // Update counters
+            _successCount += successfulRecords.length;
+            _failCount += batchResults.length - successfulRecords.length;
+            
+            _addLog('✓ Core ${isolates.indexOf(isolate) + 1}: Processed ${batch.length} records (${successfulRecords.length} successful)', 
+              type: LogType.success);
+            
+            completer.complete(successfulRecords);
+          }
+        });
+
+        futures.add(completer.future);
+      }
+
+      // Wait for all isolates to complete
+      final List<List<Map<String, dynamic>>> allResults = await Future.wait(futures);
+      
+      // Combine all results
+      final List<Map<String, dynamic>> combinedResults = [];
+      for (var result in allResults) {
+        combinedResults.addAll(result);
+      }
+
+      return combinedResults;
+    } finally {
+      // Clean up isolates
+      for (var isolate in isolates) {
+        isolate.kill(priority: Isolate.immediate);
+      }
+      for (var port in receivePorts) {
+        port.close();
+      }
     }
   }
 
@@ -546,9 +650,9 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
                   _buildStatItem('Total Records', _data.length.toString(), Icons.list_alt),
                   _buildStatItem('Processed', _processedData.length.toString(),
                       _isProcessed ? Icons.check_circle : Icons.schedule),
-                  _buildStatItem('Success Rate',
-                      _data.isEmpty ? '0%' : '${((_processedData.length / _data.length) * 100).toStringAsFixed(0)}%',
-                      Icons.analytics),
+                  _buildStatItem('CPU Cores', Platform.numberOfProcessors.toString(), Icons.memory),
+                  if (_stopwatch.elapsed.inSeconds > 0)
+                    _buildStatItem('Time', '${_stopwatch.elapsed.inSeconds}s', Icons.timer),
                 ],
               ),
             ),
@@ -587,7 +691,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
                             valueColor: AlwaysStoppedAnimation(Colors.white),
                           ),
                         )
-                      : const Icon(Icons.settings, size: 20),
+                      : const Icon(Icons.bolt, size: 20),
                   label: _isProcessing ? const Text('Processing...') : const Text('Process Data'),
                 ),
               ),
@@ -614,6 +718,27 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
               );
             },
           ),
+
+          const SizedBox(height: 16),
+
+          // Performance Info Card
+          if (_isProcessing)
+            Card(
+              elevation: 2,
+              color: const Color(0xFFE8F5E8),
+              child: Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _buildProgressStat('Success', '$_successCount', Icons.check_circle, Colors.green),
+                    _buildProgressStat('Failed', '$_failCount', Icons.error, Colors.orange),
+                    _buildProgressStat('Progress', '${((_successCount + _failCount) / _data.length * 100).toStringAsFixed(1)}%', 
+                        Icons.trending_up, Colors.blue),
+                  ],
+                ),
+              ),
+            ),
 
           const SizedBox(height: 16),
 
@@ -708,6 +833,30 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
           title,
           style: const TextStyle(
             fontSize: 12,
+            color: Colors.grey,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProgressStat(String title, String value, IconData icon, Color color) {
+    return Column(
+      children: [
+        Icon(icon, size: 20, color: color),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          title,
+          style: const TextStyle(
+            fontSize: 10,
             color: Colors.grey,
           ),
         ),
