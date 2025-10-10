@@ -4,7 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
-import 'package:excel/excel.dart' hide Border;
+import 'package:excel/excel' hide Border;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:html/parser.dart' as html;
@@ -131,30 +131,22 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
    Permission helper (shared)
    --------------------------------------------------------------------------- */
 
-/// Ensures storage permission for Android devices.
-/// Tries MANAGE_EXTERNAL_STORAGE first, falls back to legacy storage permission.
-/// If denied, prompts the user to open app settings.
-///
-/// Returns true if permission is available to write to external storage.
 Future<bool> _ensureStoragePermission(BuildContext context) async {
   if (!Platform.isAndroid) return true;
 
   try {
-    // Try managed "All files access" (Android 11+)
     final manageStatus = await Permission.manageExternalStorage.status;
     if (manageStatus.isGranted) return true;
 
     final manageResult = await Permission.manageExternalStorage.request();
     if (manageResult.isGranted) return true;
 
-    // Legacy storage permission fallback
     final storageStatus = await Permission.storage.status;
     if (storageStatus.isGranted) return true;
 
     final storageResult = await Permission.storage.request();
     if (storageResult.isGranted) return true;
 
-    // If still not granted, offer to open app settings
     if (context.mounted) {
       final open = await showDialog<bool>(
         context: context,
@@ -178,13 +170,12 @@ Future<bool> _ensureStoragePermission(BuildContext context) async {
 
     return false;
   } catch (e) {
-    // Unexpected error; treat as denied
     return false;
   }
 }
 
 /* ---------------------------------------------------------------------------
-   JSON Processor Tab - OPTIMIZED WITH MAXIMUM CPU USAGE
+   Enhanced Concurrent Processing with Better Error Handling & Accuracy
    --------------------------------------------------------------------------- */
 
 class JSONProcessorTab extends StatefulWidget {
@@ -204,10 +195,13 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
   late AnimationController _animationController;
   late Animation<Color?> _buttonColorAnimation;
   
-  // Performance tracking
+  // Enhanced performance tracking
   int _successCount = 0;
   int _failCount = 0;
+  int _skippedCount = 0;
   Stopwatch _stopwatch = Stopwatch();
+  final int _maxConcurrentIsolates = Platform.numberOfProcessors * 2; // Double the CPU cores
+  final int _recordsPerBatch = 50; // Smaller batches for better load balancing
 
   @override
   void initState() {
@@ -249,8 +243,9 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         type: type,
       ));
 
-      if (_logs.length > 100) {
-        _logs = _logs.sublist(0, 100);
+      // Keep only last 200 logs for performance
+      if (_logs.length > 200) {
+        _logs = _logs.sublist(0, 200);
       }
     });
   }
@@ -283,97 +278,157 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
     }
   }
 
-  // Isolate-compatible UID extraction function
+  // Enhanced UID extraction with better patterns and fallbacks
   static Future<String?> _extractUidIsolate(String link) async {
     if (link.isEmpty) return null;
 
-    // Case 1: profile.php?id=NUMBER
-    final profileRegex = RegExp(r'profile\.php\?id=(\d+)');
-    final profileMatch = profileRegex.firstMatch(link);
-    if (profileMatch != null) {
-      return profileMatch.group(1);
-    }
-
-    // Case 2: numeric in path
-    final numericRegex = RegExp(r'facebook\.com/(\d+)');
-    final numericMatch = numericRegex.firstMatch(link);
-    if (numericMatch != null) {
-      return numericMatch.group(1);
-    }
-
-    // Case 3: share link -> fetch and parse
     try {
-      final response = await http.get(
-        Uri.parse(link),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
-      ).timeout(const Duration(seconds: 10));
+      // Clean the URL first
+      String cleanLink = link.trim();
+      if (!cleanLink.startsWith('http')) {
+        cleanLink = 'https://$cleanLink';
+      }
 
-      if (response.statusCode == 200) {
-        final document = html.parse(response.body);
+      // Pattern 1: profile.php?id=NUMBER (highest priority)
+      final profileRegex = RegExp(r'profile\.php\?id=(\d+)');
+      final profileMatch = profileRegex.firstMatch(cleanLink);
+      if (profileMatch != null) {
+        return profileMatch.group(1);
+      }
 
-        // A: fb://profile/
-        final metaTags = document.querySelectorAll('meta');
-        for (var meta in metaTags) {
-          final content = meta.attributes['content'];
-          if (content != null && content.contains('fb://profile/')) {
-            final fbProfileRegex = RegExp(r'fb://profile/(\d+)');
-            final match = fbProfileRegex.firstMatch(content);
-            if (match != null) {
-              return match.group(1);
+      // Pattern 2: Direct numeric ID in path
+      final numericRegex = RegExp(r'facebook\.com/(\d+)(?:/|$)');
+      final numericMatch = numericRegex.firstMatch(cleanLink);
+      if (numericMatch != null) {
+        return numericMatch.group(1);
+      }
+
+      // Pattern 3: Check for mobile URLs
+      final mobileRegex = RegExp(r'm\.facebook\.com/(\d+)');
+      final mobileMatch = mobileRegex.firstMatch(cleanLink);
+      if (mobileMatch != null) {
+        return mobileMatch.group(1);
+      }
+
+      // Pattern 4: Check for fb://profile/ in the URL itself
+      final fbProfileRegex = RegExp(r'fb://profile/(\d+)');
+      final fbProfileMatch = fbProfileRegex.firstMatch(cleanLink);
+      if (fbProfileMatch != null) {
+        return fbProfileMatch.group(1);
+      }
+
+      // Pattern 5: For share links, fetch and parse with multiple strategies
+      if (cleanLink.contains('facebook.com') && 
+          (cleanLink.contains('/posts/') || 
+           cleanLink.contains('/story.php') ||
+           cleanLink.contains('/photo.php') ||
+           cleanLink.contains('/permalink.php'))) {
+        
+        final response = await http.get(
+          Uri.parse(cleanLink),
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+          },
+        ).timeout(const Duration(seconds: 15));
+
+        if (response.statusCode == 200) {
+          final document = html.parse(response.body);
+
+          // Strategy A: Look for fb://profile/ in meta tags
+          final metaTags = document.querySelectorAll('meta');
+          for (var meta in metaTags) {
+            final content = meta.attributes['content'] ?? '';
+            if (content.contains('fb://profile/')) {
+              final match = RegExp(r'fb://profile/(\d+)').firstMatch(content);
+              if (match != null) return match.group(1);
             }
           }
-        }
 
-        // B: "userID":"123..."
-        final userIDRegex = RegExp(r'"userID":"(\d+)"');
-        final userIDMatch = userIDRegex.firstMatch(response.body);
-        if (userIDMatch != null) {
-          return userIDMatch.group(1);
+          // Strategy B: Look for userID in JSON-LD or script tags
+          final scriptTags = document.querySelectorAll('script');
+          for (var script in scriptTags) {
+            final content = script.innerHtml;
+            
+            // Look for "userID":"123..."
+            final userIDRegex = RegExp(r'"userID"\s*:\s*"(\d+)"');
+            final userIDMatch = userIDRegex.firstMatch(content);
+            if (userIDMatch != null) return userIDMatch.group(1);
+
+            // Look for "actor_id":"123..."
+            final actorIdRegex = RegExp(r'"actor_id"\s*:\s*"(\d+)"');
+            final actorIdMatch = actorIdRegex.firstMatch(content);
+            if (actorIdMatch != null) return actorIdMatch.group(1);
+
+            // Look for profile/123 patterns
+            final profileIdRegex = RegExp(r'profile/(\d+)');
+            final profileIdMatch = profileIdRegex.firstMatch(content);
+            if (profileIdMatch != null) return profileIdMatch.group(1);
+          }
+
+          // Strategy C: Look for canonical URL with numeric ID
+          final canonicalLink = document.querySelector('link[rel="canonical"]');
+          if (canonicalLink != null) {
+            final href = canonicalLink.attributes['href'] ?? '';
+            final canonicalMatch = RegExp(r'facebook\.com/(\d+)').firstMatch(href);
+            if (canonicalMatch != null) return canonicalMatch.group(1);
+          }
         }
       }
+
+      return null;
     } catch (e) {
-      // Logging will be handled in main isolate
+      // Silent fail - errors are handled in main isolate
       return null;
     }
-
-    return null;
   }
 
-  // Worker function for isolates
+  // Worker function for isolates with enhanced error handling
   static Future<void> _processRecordsIsolate(SendPort sendPort) async {
     final port = ReceivePort();
     sendPort.send(port.sendPort);
 
     await for (final message in port) {
       if (message is List) {
-        final int startIndex = message[0];
+        final int batchId = message[0];
         final List<Map<String, dynamic>> records = message[1];
         final SendPort replyTo = message[2];
 
         final List<Map<String, dynamic>?> results = [];
+        final List<String> errors = [];
 
         // Process records in this batch
         for (int i = 0; i < records.length; i++) {
-          final record = records[i];
-          final username = record['username']?.toString() ?? '';
+          try {
+            final record = records[i];
+            final username = record['username']?.toString() ?? '';
 
-          if (!username.contains('facebook.com')) {
-            results.add(record);
-          } else {
-            final uid = await _extractUidIsolate(username);
-            if (uid != null) {
-              final updatedRecord = Map<String, dynamic>.from(record);
-              updatedRecord['username'] = uid;
-              results.add(updatedRecord);
+            // Skip if not a Facebook URL or already numeric
+            if (!username.contains('facebook.com') || RegExp(r'^\d+$').hasMatch(username)) {
+              results.add(record);
             } else {
-              results.add(null); // Mark for removal
+              final uid = await _extractUidIsolate(username);
+              if (uid != null) {
+                final updatedRecord = Map<String, dynamic>.from(record);
+                updatedRecord['username'] = uid;
+                results.add(updatedRecord);
+              } else {
+                // Keep original record if UID extraction fails
+                results.add(record);
+                errors.add('Failed to extract UID from: ${username.substring(0, min(50, username.length))}...');
+              }
             }
+          } catch (e) {
+            // Keep original record on error
+            results.add(records[i]);
+            errors.add('Error processing record $i: $e');
           }
         }
 
-        replyTo.send([startIndex, results]);
+        replyTo.send([batchId, results, errors]);
       }
     }
   }
@@ -399,19 +454,20 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
           _isProcessed = false;
           _successCount = 0;
           _failCount = 0;
+          _skippedCount = 0;
         });
 
-        _addLog('Imported ${_data.length} records', type: LogType.success);
+        _addLog('📁 Imported ${_data.length} records', type: LogType.success);
         _stopButtonAnimation();
       }
     } catch (e) {
-      _addLog('Error importing JSON: $e', type: LogType.error);
+      _addLog('❌ Error importing JSON: $e', type: LogType.error);
     }
   }
 
   Future<void> _processData() async {
     if (_data.isEmpty) {
-      _addLog('No data to process', type: LogType.warning);
+      _addLog('⚠️ No data to process', type: LogType.warning);
       return;
     }
 
@@ -420,17 +476,18 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       _isProcessed = false;
       _successCount = 0;
       _failCount = 0;
+      _skippedCount = 0;
     });
 
     _stopwatch.reset();
     _stopwatch.start();
 
-    _addLog('Starting PARALLEL data processing with maximum CPU usage...', type: LogType.info);
-    _addLog('Processing ${_data.length} records using ${Platform.numberOfProcessors} CPU cores', type: LogType.info);
+    _addLog('🚀 Starting ULTRA-FAST concurrent processing...', type: LogType.info);
+    _addLog('🎯 Processing ${_data.length} records using $_maxConcurrentIsolates concurrent workers', type: LogType.info);
 
     try {
-      // Use isolates for parallel processing
-      final results = await _processDataWithIsolates();
+      // Use enhanced concurrent processing
+      final results = await _processDataWithEnhancedConcurrency();
       
       _stopwatch.stop();
       
@@ -440,48 +497,48 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         _isProcessed = true;
       });
 
-      final successRate = _data.isEmpty ? 0 : ((_successCount / _data.length) * 100);
-      _addLog('🚀 PARALLEL PROCESSING COMPLETED!', type: LogType.success);
-      _addLog('⏱️  Time taken: ${_stopwatch.elapsed}', type: LogType.success);
-      _addLog('✅ Successfully processed: $_successCount records', type: LogType.success);
-      _addLog('❌ Failed/removed: $_failCount records', type: _failCount > 0 ? LogType.warning : LogType.info);
-      _addLog('📊 Success rate: ${successRate.toStringAsFixed(1)}%', type: LogType.success);
-      _addLog('🎯 Final dataset: ${_processedData.length} records', type: LogType.success);
+      final totalProcessed = _successCount + _failCount + _skippedCount;
+      final successRate = totalProcessed == 0 ? 0 : ((_successCount / totalProcessed) * 100);
+      
+      _addLog('✅ CONCURRENT PROCESSING COMPLETED!', type: LogType.success);
+      _addLog('⏱️  Processing time: ${_stopwatch.elapsed}', type: LogType.success);
+      _addLog('📊 Records processed: $totalProcessed', type: LogType.info);
+      _addLog('🎯 UIDs extracted: $_successCount', type: LogType.success);
+      _addLog('⚠️  Extraction failed: $_failCount', type: _failCount > 0 ? LogType.warning : LogType.info);
+      _addLog('➡️  Skipped (already numeric): $_skippedCount', type: LogType.info);
+      _addLog('📈 Success rate: ${successRate.toStringAsFixed(1)}%', type: LogType.success);
+      _addLog('💾 Final dataset: ${_processedData.length} records', type: LogType.success);
 
       if (_successCount > 0) {
         _startButtonAnimation();
       }
     } catch (e) {
       _stopwatch.stop();
-      _addLog('Error during parallel processing: $e', type: LogType.error);
+      _addLog('❌ Error during processing: $e', type: LogType.error);
       setState(() {
         _isProcessing = false;
       });
     }
   }
 
-  Future<List<Map<String, dynamic>>> _processDataWithIsolates() async {
-    final int numberOfCores = Platform.numberOfProcessors;
-    final int batchSize = (_data.length / numberOfCores).ceil();
+  Future<List<Map<String, dynamic>>> _processDataWithEnhancedConcurrency() async {
+    final int totalRecords = _data.length;
+    final int batchSize = _recordsPerBatch;
+    final int totalBatches = (totalRecords / batchSize).ceil();
     
-    _addLog('Using $numberOfCores CPU cores with batch size of $batchSize records per core', type: LogType.info);
+    _addLog('🔧 Using $totalBatches batches with $batchSize records each', type: LogType.info);
 
+    final List<Map<String, dynamic>> allResults = [];
+    final List<String> allErrors = [];
+
+    // Create isolate pool
     final List<Isolate> isolates = [];
     final List<ReceivePort> receivePorts = [];
-    final List<Future<List<Map<String, dynamic>>>> futures = [];
+    final List<SendPort> sendPorts = [];
 
     try {
-      // Create isolates
-      for (int i = 0; i < numberOfCores; i++) {
-        final startIndex = i * batchSize;
-        final endIndex = (i + 1) * batchSize;
-        if (startIndex >= _data.length) break;
-
-        final batch = _data.sublist(
-          startIndex,
-          endIndex > _data.length ? _data.length : endIndex,
-        );
-
+      // Initialize isolate pool
+      for (int i = 0; i < min(_maxConcurrentIsolates, totalBatches); i++) {
         final receivePort = ReceivePort();
         receivePorts.add(receivePort);
 
@@ -491,46 +548,96 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         );
         isolates.add(isolate);
 
-        // Send data to isolate and wait for response
+        // Wait for isolate to be ready and get its send port
+        final SendPort isolateSendPort = await receivePort.first as SendPort;
+        sendPorts.add(isolateSendPort);
+      }
+
+      _addLog('🎯 Isolate pool ready: ${isolates.length} workers', type: LogType.success);
+
+      // Process batches using worker pool
+      final List<Completer<List<Map<String, dynamic>>>> completers = [];
+      int completedBatches = 0;
+
+      for (int batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+        final startIndex = batchIndex * batchSize;
+        final endIndex = min((batchIndex + 1) * batchSize, totalRecords);
+        final batch = _data.sublist(startIndex, endIndex);
+
         final completer = Completer<List<Map<String, dynamic>>>();
-        receivePort.listen((message) {
-          if (message is SendPort) {
-            // Isolate is ready, send the batch
-            message.send([startIndex, batch, receivePort.sendPort]);
-          } else if (message is List) {
-            // Received results from isolate
-            final int batchStartIndex = message[0];
+        completers.add(completer);
+
+        // Assign batch to next available worker (round-robin)
+        final workerIndex = batchIndex % sendPorts.length;
+        final workerSendPort = sendPorts[workerIndex];
+
+        final batchReceivePort = ReceivePort();
+        batchReceivePort.listen((message) {
+          if (message is List) {
+            final int receivedBatchId = message[0];
             final List<Map<String, dynamic>?> batchResults = message[1];
-            
-            // Filter out null results (failed records)
-            final successfulRecords = batchResults.whereType<Map<String, dynamic>>().toList();
-            
+            final List<String> batchErrors = message[2] ?? [];
+
             // Update counters
-            _successCount += successfulRecords.length;
-            _failCount += batchResults.length - successfulRecords.length;
+            for (var record in batchResults) {
+              if (record != null) {
+                final originalUsername = _data[startIndex + batchResults.indexOf(record)]?['username']?.toString() ?? '';
+                final newUsername = record['username']?.toString() ?? '';
+                
+                if (originalUsername != newUsername) {
+                  _successCount++;
+                } else if (RegExp(r'^\d+$').hasMatch(originalUsername)) {
+                  _skippedCount++;
+                } else {
+                  _failCount++;
+                }
+              }
+            }
+
+            allErrors.addAll(batchErrors);
             
-            _addLog('✓ Core ${isolates.indexOf(isolate) + 1}: Processed ${batch.length} records (${successfulRecords.length} successful)', 
-              type: LogType.success);
-            
+            // Filter out null results and complete
+            final successfulRecords = batchResults.whereType<Map<String, dynamic>>().toList();
             completer.complete(successfulRecords);
+            
+            completedBatches++;
+            final progress = ((completedBatches / totalBatches) * 100).toInt();
+            
+            _addLog('📦 Batch ${receivedBatchId + 1}/$totalBatches completed ($progress%) - ${successfulRecords.length} records', 
+              type: LogType.info);
+            
+            batchReceivePort.close();
           }
         });
 
-        futures.add(completer.future);
+        // Send batch to worker
+        workerSendPort.send([batchIndex, batch, batchReceivePort.sendPort]);
       }
 
-      // Wait for all isolates to complete
-      final List<List<Map<String, dynamic>>> allResults = await Future.wait(futures);
-      
+      // Wait for all batches to complete
+      final List<List<Map<String, dynamic>>> batchResults = await Future.wait(
+        completers.map((c) => c.future)
+      );
+
       // Combine all results
-      final List<Map<String, dynamic>> combinedResults = [];
-      for (var result in allResults) {
-        combinedResults.addAll(result);
+      for (var batch in batchResults) {
+        allResults.addAll(batch);
       }
 
-      return combinedResults;
+      // Log any errors that occurred
+      if (allErrors.isNotEmpty) {
+        _addLog('⚠️  ${allErrors.length} errors occurred during processing', type: LogType.warning);
+        for (int i = 0; i < min(5, allErrors.length); i++) {
+          _addLog('   ${allErrors[i]}', type: LogType.warning);
+        }
+        if (allErrors.length > 5) {
+          _addLog('   ... and ${allErrors.length - 5} more errors', type: LogType.warning);
+        }
+      }
+
+      return allResults;
     } finally {
-      // Clean up isolates
+      // Clean up all isolates and ports
       for (var isolate in isolates) {
         isolate.kill(priority: Isolate.immediate);
       }
@@ -542,16 +649,15 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
 
   Future<void> _downloadJSON() async {
     if (_processedData.isEmpty) {
-      _addLog('No processed data to download', type: LogType.warning);
+      _addLog('⚠️ No processed data to download', type: LogType.warning);
       return;
     }
 
     try {
-      // Ensure storage permission (Android)
       if (Platform.isAndroid) {
         final ok = await _ensureStoragePermission(context);
         if (!ok) {
-          _addLog('Storage permission denied. Cannot save file.', type: LogType.error);
+          _addLog('❌ Storage permission denied. Cannot save file.', type: LogType.error);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -564,13 +670,12 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         }
       }
 
-      // Let the user pick the save location
       final String? outputDirectory = await FilePicker.platform.getDirectoryPath(
-        dialogTitle: 'Please select where to save the file',
+        dialogTitle: 'Select where to save the processed file',
       );
 
       if (outputDirectory == null) {
-        _addLog('Save operation cancelled by user.', type: LogType.warning);
+        _addLog('💡 Save operation cancelled by user.', type: LogType.warning);
         return;
       }
 
@@ -581,16 +686,17 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       final filePath = path.join(outputDirectory, newFileName);
       final file = File(filePath);
 
-      await file.writeAsString(json.encode(_processedData));
+      // Pretty print JSON for better readability
+      const encoder = JsonEncoder.withIndent('  ');
+      await file.writeAsString(encoder.convert(_processedData));
 
-      // Verify file was created
       if (await file.exists()) {
-        _addLog('File saved successfully: $filePath', type: LogType.success);
+        _addLog('💾 File saved successfully: $filePath', type: LogType.success);
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('✓ File saved to: $filePath'),
+              content: Text('✅ File saved to: ${path.basename(filePath)}'),
               backgroundColor: const Color(0xFF467731),
               behavior: SnackBarBehavior.floating,
             ),
@@ -598,28 +704,10 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         }
         _stopButtonAnimation();
       } else {
-        _addLog('Error: File was not created', type: LogType.error);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('✗ Error: File was not saved'),
-              backgroundColor: Colors.red,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
+        _addLog('❌ Error: File was not created', type: LogType.error);
       }
     } catch (e) {
-      _addLog('Error saving file: $e', type: LogType.error);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✗ Save error: $e'),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
+      _addLog('❌ Error saving file: $e', type: LogType.error);
     }
   }
 
@@ -629,6 +717,8 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
     });
   }
 
+  int min(int a, int b) => a < b ? a : b;
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -636,7 +726,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Header Stats Card
+          // Enhanced Stats Card
           Card(
             elevation: 4,
             shape: RoundedRectangleBorder(
@@ -650,7 +740,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
                   _buildStatItem('Total Records', _data.length.toString(), Icons.list_alt),
                   _buildStatItem('Processed', _processedData.length.toString(),
                       _isProcessed ? Icons.check_circle : Icons.schedule),
-                  _buildStatItem('CPU Cores', Platform.numberOfProcessors.toString(), Icons.memory),
+                  _buildStatItem('Workers', '$_maxConcurrentIsolates', Icons.memory),
                   if (_stopwatch.elapsed.inSeconds > 0)
                     _buildStatItem('Time', '${_stopwatch.elapsed.inSeconds}s', Icons.timer),
                 ],
@@ -700,7 +790,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
 
           const SizedBox(height: 8),
 
-          // Download Button with Animation
+          // Enhanced Download Button
           AnimatedBuilder(
             animation: _animationController,
             builder: (context, child) {
@@ -721,7 +811,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
 
           const SizedBox(height: 16),
 
-          // Performance Info Card
+          // Real-time Progress Card
           if (_isProcessing)
             Card(
               elevation: 2,
@@ -733,8 +823,10 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
                   children: [
                     _buildProgressStat('Success', '$_successCount', Icons.check_circle, Colors.green),
                     _buildProgressStat('Failed', '$_failCount', Icons.error, Colors.orange),
-                    _buildProgressStat('Progress', '${((_successCount + _failCount) / _data.length * 100).toStringAsFixed(1)}%', 
-                        Icons.trending_up, Colors.blue),
+                    _buildProgressStat('Skipped', '$_skippedCount', Icons.skip_next, Colors.blue),
+                    _buildProgressStat('Progress', 
+                        '${_data.isEmpty ? 0 : (((_successCount + _failCount + _skippedCount) / _data.length) * 100).toStringAsFixed(1)}%', 
+                        Icons.trending_up, const Color(0xFF467731)),
                   ],
                 ),
               ),
@@ -742,12 +834,11 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
 
           const SizedBox(height: 16),
 
-          // Logs Section
+          // Enhanced Logs Section
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Logs Header
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -773,7 +864,6 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
 
                 const SizedBox(height: 8),
 
-                // Logs Container
                 Expanded(
                   child: Card(
                     elevation: 4,
@@ -918,7 +1008,7 @@ class LogEntry {
 }
 
 /* ---------------------------------------------------------------------------
-   JSON to Excel Tab
+   JSON to Excel Tab (unchanged but included for completeness)
    --------------------------------------------------------------------------- */
 
 class JSONToExcelTab extends StatefulWidget {
@@ -980,7 +1070,6 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
     });
 
     try {
-      // Read file bytes
       Uint8List? bytes;
       if (_selectedJsonFile!.bytes != null) {
         bytes = _selectedJsonFile!.bytes!;
@@ -994,11 +1083,9 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
       final content = utf8.decode(bytes);
       final List<dynamic> data = jsonDecode(content);
 
-      // Create Excel workbook
       var excelFile = Excel.createExcel();
       Sheet sheet = excelFile['Sheet1'];
 
-      // Add headers
       sheet.appendRow([
         TextCellValue('Username'),
         TextCellValue('Password'),
@@ -1006,7 +1093,6 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
         TextCellValue('Email'),
       ]);
 
-      // Add data rows
       for (var row in data) {
         final map = row as Map<String, dynamic>;
         sheet.appendRow([
@@ -1017,7 +1103,6 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
         ]);
       }
 
-      // Ensure storage permission for Android
       if (Platform.isAndroid) {
         final ok = await _ensureStoragePermission(context);
         if (!ok) {
@@ -1026,14 +1111,13 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
         }
       }
 
-      // Let user choose save directory
       final String? outputDirectory = await FilePicker.platform.getDirectoryPath(
         dialogTitle: 'Please select where to save the Excel file',
       );
 
       if (outputDirectory == null) {
         _showError('Save operation cancelled by user.');
-        return; // User cancelled the picker
+        return;
       }
 
       final baseName = path.basenameWithoutExtension(_selectedJsonFile!.name);
