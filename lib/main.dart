@@ -4,13 +4,14 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
-import 'package:excel/excel' hide Border;
+import 'package:excel/excel.dart' hide Border;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:html/parser.dart' as html;
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as path;
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const FBDataManagerApp());
@@ -94,7 +95,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -113,6 +114,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           tabs: const [
             Tab(text: 'JSON Processor'),
             Tab(text: 'JSON to Excel'),
+            Tab(text: 'Settings'),
           ],
         ),
       ),
@@ -121,6 +123,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         children: const [
           JSONProcessorTab(),
           JSONToExcelTab(),
+          SettingsTab(),
         ],
       ),
     );
@@ -200,8 +203,8 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
   int _failCount = 0;
   int _skippedCount = 0;
   Stopwatch _stopwatch = Stopwatch();
-  final int _maxConcurrentIsolates = Platform.numberOfProcessors * 2; // Double the CPU cores
-  final int _recordsPerBatch = 50; // Smaller batches for better load balancing
+  int _maxConcurrentIsolates = Platform.numberOfProcessors * 2; // Double the CPU cores
+  int _recordsPerBatch = 50; // Default batch size
 
   @override
   void initState() {
@@ -279,7 +282,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
   }
 
   // Enhanced UID extraction with better patterns and fallbacks
-  static Future<String?> _extractUidIsolate(String link) async {
+  static Future<String?> _extractUid(String link) async {
     if (link.isEmpty) return null;
 
     try {
@@ -410,7 +413,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
             if (!username.contains('facebook.com') || RegExp(r'^\d+$').hasMatch(username)) {
               results.add(record);
             } else {
-              final uid = await _extractUidIsolate(username);
+              final uid = await _extractUid(username);
               if (uid != null) {
                 final updatedRecord = Map<String, dynamic>.from(record);
                 updatedRecord['username'] = uid;
@@ -471,6 +474,10 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       return;
     }
 
+    final prefs = await SharedPreferences.getInstance();
+    final concurrentEnabled = prefs.getBool('concurrent_enabled') ?? true;
+    _recordsPerBatch = prefs.getInt('batch_size') ?? 50;
+
     setState(() {
       _isProcessing = true;
       _isProcessed = false;
@@ -482,12 +489,13 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
     _stopwatch.reset();
     _stopwatch.start();
 
-    _addLog('🚀 Starting ULTRA-FAST concurrent processing...', type: LogType.info);
-    _addLog('🎯 Processing ${_data.length} records using $_maxConcurrentIsolates concurrent workers', type: LogType.info);
+    _addLog('🚀 Starting processing...', type: LogType.info);
+    _addLog('🎯 Processing ${_data.length} records${concurrentEnabled ? ' concurrently with $_maxConcurrentIsolates workers' : ' sequentially'}', type: LogType.info);
 
     try {
-      // Use enhanced concurrent processing
-      final results = await _processDataWithEnhancedConcurrency();
+      final results = concurrentEnabled 
+          ? await _processDataWithEnhancedConcurrency()
+          : await _processDataSequentially();
       
       _stopwatch.stop();
       
@@ -500,7 +508,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       final totalProcessed = _successCount + _failCount + _skippedCount;
       final successRate = totalProcessed == 0 ? 0 : ((_successCount / totalProcessed) * 100);
       
-      _addLog('✅ CONCURRENT PROCESSING COMPLETED!', type: LogType.success);
+      _addLog('✅ PROCESSING COMPLETED!', type: LogType.success);
       _addLog('⏱️  Processing time: ${_stopwatch.elapsed}', type: LogType.success);
       _addLog('📊 Records processed: $totalProcessed', type: LogType.info);
       _addLog('🎯 UIDs extracted: $_successCount', type: LogType.success);
@@ -519,6 +527,49 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
         _isProcessing = false;
       });
     }
+  }
+
+  Future<List<Map<String, dynamic>>> _processDataSequentially() async {
+    final List<Map<String, dynamic>> results = [];
+    int index = 0;
+
+    for (var record in _data) {
+      index++;
+      try {
+        final username = record['username']?.toString() ?? '';
+
+        if (!username.contains('facebook.com') || RegExp(r'^\d+$').hasMatch(username)) {
+          results.add(record);
+          _skippedCount++;
+        } else {
+          final uid = await _extractUid(username);
+          if (uid != null) {
+            final updatedRecord = Map<String, dynamic>.from(record);
+            updatedRecord['username'] = uid;
+            results.add(updatedRecord);
+            _successCount++;
+          } else {
+            results.add(record);
+            _failCount++;
+          }
+        }
+      } catch (e) {
+        results.add(record);
+        _failCount++;
+        _addLog('Error processing record $index: $e', type: LogType.error);
+      }
+
+      if (index % 10 == 0 && mounted) {
+        setState(() {});
+        _addLog('📦 Processed $index / ${_data.length} records', type: LogType.info);
+      }
+    }
+
+    if (mounted) {
+      setState(() {});
+    }
+
+    return results;
   }
 
   Future<List<Map<String, dynamic>>> _processDataWithEnhancedConcurrency() async {
@@ -1008,7 +1059,7 @@ class LogEntry {
 }
 
 /* ---------------------------------------------------------------------------
-   JSON to Excel Tab (unchanged but included for completeness)
+   JSON to Excel Tab
    --------------------------------------------------------------------------- */
 
 class JSONToExcelTab extends StatefulWidget {
@@ -1059,6 +1110,14 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
     }
   }
 
+  String _keyToDisplay(String key) {
+    return key
+        .replaceAll('_', ' ')
+        .split(' ')
+        .map((w) => w.isNotEmpty ? w[0].toUpperCase() + w.substring(1) : '')
+        .join(' ');
+  }
+
   Future<void> _convertJsonToExcel() async {
     if (_selectedJsonFile == null) {
       _showError('Please select a JSON file first');
@@ -1083,24 +1142,25 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
       final content = utf8.decode(bytes);
       final List<dynamic> data = jsonDecode(content);
 
+      final prefs = await SharedPreferences.getInstance();
+      final orderJson = prefs.getString('excel_column_order');
+      List<String> columnOrder = ['username', 'password', 'auth_code', 'email'];
+      if (orderJson != null) {
+        columnOrder = (json.decode(orderJson) as List).cast<String>();
+      }
+
       var excelFile = Excel.createExcel();
       Sheet sheet = excelFile['Sheet1'];
 
-      sheet.appendRow([
-        TextCellValue('Username'),
-        TextCellValue('Password'),
-        TextCellValue('Authcode'),
-        TextCellValue('Email'),
-      ]);
+      sheet.appendRow(
+        columnOrder.map((key) => TextCellValue(_keyToDisplay(key))).toList(),
+      );
 
       for (var row in data) {
         final map = row as Map<String, dynamic>;
-        sheet.appendRow([
-          TextCellValue(map['username']?.toString() ?? ''),
-          TextCellValue(map['password']?.toString() ?? ''),
-          TextCellValue(map['tfa']?.toString() ?? ''),
-          TextCellValue(map['email']?.toString() ?? ''),
-        ]);
+        sheet.appendRow(
+          columnOrder.map((key) => TextCellValue(map[key]?.toString() ?? '')).toList(),
+        );
       }
 
       if (Platform.isAndroid) {
@@ -1244,10 +1304,166 @@ class _JSONToExcelTabState extends State<JSONToExcelTab> {
                     '    "email": "example@email.com",\n'
                     '    "username": "facebook_link_or_uid",\n'
                     '    "password": "password",\n'
-                    '    "tfa": "2fa_code"\n'
+                    '    "auth_code": "2fa_code"\n'
                     '  }\n'
                     ']',
                     style: TextStyle(fontFamily: 'Monospace', fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Settings Tab
+   --------------------------------------------------------------------------- */
+
+class SettingsTab extends StatefulWidget {
+  const SettingsTab({super.key});
+
+  @override
+  State<SettingsTab> createState() => _SettingsTabState();
+}
+
+class _SettingsTabState extends State<SettingsTab> {
+  bool _concurrentEnabled = true;
+  TextEditingController _batchSizeController = TextEditingController();
+  List<String> _columnOrder = ['username', 'password', 'auth_code', 'email'];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _concurrentEnabled = prefs.getBool('concurrent_enabled') ?? true;
+      int batchSize = prefs.getInt('batch_size') ?? 50;
+      _batchSizeController.text = batchSize.toString();
+      String? orderJson = prefs.getString('excel_column_order');
+      if (orderJson != null) {
+        _columnOrder = (json.decode(orderJson) as List).cast<String>();
+      }
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _saveConcurrentSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    int? batchSize = int.tryParse(_batchSizeController.text);
+    if (batchSize == null || batchSize <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Invalid batch size')),
+      );
+      return;
+    }
+    await prefs.setBool('concurrent_enabled', _concurrentEnabled);
+    await prefs.setInt('batch_size', batchSize);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Concurrent settings saved')),
+    );
+  }
+
+  Future<void> _saveColumnOrder() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('excel_column_order', json.encode(_columnOrder));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Column order saved')),
+    );
+  }
+
+  String _keyToDisplay(String key) {
+    return key
+        .replaceAll('_', ' ')
+        .split(' ')
+        .map((w) => w.isNotEmpty ? w[0].toUpperCase() + w.substring(1) : '')
+        .join(' ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: ListView(
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Concurrent Processing',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  SwitchListTile(
+                    title: const Text('Enable Concurrent Processing'),
+                    value: _concurrentEnabled,
+                    onChanged: (val) {
+                      setState(() {
+                        _concurrentEnabled = val;
+                      });
+                    },
+                  ),
+                  TextField(
+                    controller: _batchSizeController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Batch Size'),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: _saveConcurrentSettings,
+                    child: const Text('Save Concurrent Settings'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Excel Column Order',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Drag to reorder columns'),
+                  ReorderableListView(
+                    shrinkWrap: true,
+                    onReorder: (oldIndex, newIndex) {
+                      setState(() {
+                        if (newIndex > oldIndex) newIndex--;
+                        final item = _columnOrder.removeAt(oldIndex);
+                        _columnOrder.insert(newIndex, item);
+                      });
+                    },
+                    children: _columnOrder
+                        .map((key) => ListTile(
+                              key: ValueKey(key),
+                              title: Text(_keyToDisplay(key)),
+                              leading: const Icon(Icons.drag_handle),
+                            ))
+                        .toList(),
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: _saveColumnOrder,
+                    child: const Text('Save Column Order'),
                   ),
                 ],
               ),
