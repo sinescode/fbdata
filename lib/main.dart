@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
-
+import 'dart:math' as math;
 import 'package:excel/excel.dart' hide Border;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -421,7 +421,7 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
               } else {
                 // Keep original record if UID extraction fails
                 results.add(record);
-                errors.add('Failed to extract UID from: ${username.substring(0, min(50, username.length))}...');
+                errors.add('Failed to extract UID from: ${username.substring(0, math.min(50, username.length))}...');
               }
             }
           } catch (e) {
