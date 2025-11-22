@@ -324,6 +324,8 @@ class _JSONProcessorTabState extends State<JSONProcessorTab> with SingleTickerPr
       if (cleanLink.contains('facebook.com') && 
           (cleanLink.contains('/posts/') || 
            cleanLink.contains('/story.php') ||
+           cleanLink.contains('/share/')
+             ||
            cleanLink.contains('/photo.php') ||
            cleanLink.contains('/permalink.php'))) {
         
